@@ -10,7 +10,7 @@
 
 ## 主要特性
 
-- [x] [批处理](../../introduction/concepts/connector-v2-features.md)
+- [ ] [批处理](../../introduction/concepts/connector-v2-features.md)
 - [x] [流处理](../../introduction/concepts/connector-v2-features.md)
 - [ ] [精确一次](../../introduction/concepts/connector-v2-features.md)
 - [ ] [列裁剪](../../introduction/concepts/connector-v2-features.md)
@@ -21,6 +21,9 @@
 
 通过 TCP 接收 syslog 消息，并按照 RFC 3164（BSD syslog）协议进行解析。该连接器作为服务端运行，
 监听指定端口，接受来自 syslog 客户端（如 `rsyslog`、`syslog-ng`、硬件设备等）的连接。
+
+该连接器目前仅支持流处理模式。由于该连接器作为 TCP 监听服务运行，没有天然的输入结束点，
+因此不支持批处理模式。
 
 每条消息将被解析为结构化字段：设施码（facility）、严重级别（severity）、时间戳、主机名、应用名、
 进程 ID 和消息内容。
@@ -49,7 +52,7 @@
 
 ## 示例
 
-以下示例展示如何在 514 端口接收 syslog 消息并将其输出到控制台：
+以下示例展示如何在 5140 端口接收 syslog 消息并将其输出到控制台：
 
 ```hocon
 env {
@@ -59,7 +62,7 @@ env {
 
 source {
   Syslog {
-    port = 514
+    port = 5140
     host = "0.0.0.0"
   }
 }
@@ -72,7 +75,7 @@ sink {
 在 Linux 上可使用 `logger` 命令发送测试消息：
 
 ```bash
-logger -n 127.0.0.1 -P 514 -T "来自 syslog 连接器的测试消息"
+logger -n 127.0.0.1 -P 5140 -T "来自 syslog 连接器的测试消息"
 ```
 
 ## RFC 3164 消息格式

@@ -10,7 +10,7 @@
 
 ## Key features
 
-- [x] [batch](../../introduction/concepts/connector-v2-features.md)
+- [ ] [batch](../../introduction/concepts/connector-v2-features.md)
 - [x] [stream](../../introduction/concepts/connector-v2-features.md)
 - [ ] [exactly-once](../../introduction/concepts/connector-v2-features.md)
 - [ ] [column projection](../../introduction/concepts/connector-v2-features.md)
@@ -22,6 +22,9 @@
 Receives syslog messages over TCP and parses them according to RFC 3164 (BSD syslog). The connector
 acts as a server — it listens on a configured port and accepts incoming connections from syslog
 clients (e.g., `rsyslog`, `syslog-ng`, hardware appliances).
+
+This connector currently supports streaming mode only. Batch mode is not supported because the
+connector acts as a TCP listener and does not have a natural end-of-input.
 
 Each message is parsed into structured fields: facility, severity, timestamp, hostname, app name,
 process ID, and message body.
@@ -50,7 +53,7 @@ Each RFC 3164 syslog message is parsed into the following columns:
 
 ## How to Create a Syslog Data Synchronization Job
 
-The following example shows how to receive syslog messages on port 514 and write them to the console:
+The following example shows how to receive syslog messages on port 5140 and write them to the console:
 
 ```hocon
 env {
@@ -60,7 +63,7 @@ env {
 
 source {
   Syslog {
-    port = 514
+    port = 5140
     host = "0.0.0.0"
   }
 }
@@ -73,7 +76,7 @@ sink {
 To send a test message using `logger` on Linux:
 
 ```bash
-logger -n 127.0.0.1 -P 514 -T "Hello from syslog connector"
+logger -n 127.0.0.1 -P 5140 -T "Hello from syslog connector"
 ```
 
 ## RFC 3164 Message Format

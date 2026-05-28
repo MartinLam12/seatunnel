@@ -76,9 +76,7 @@ public class SyslogSource extends AbstractSingleSplitSource<SeaTunnelRow> {
 
     @Override
     public Boundedness getBoundedness() {
-        return JobMode.BATCH.equals(jobContext.getJobMode())
-                ? Boundedness.BOUNDED
-                : Boundedness.UNBOUNDED;
+        return Boundedness.UNBOUNDED;
     }
 
     @Override

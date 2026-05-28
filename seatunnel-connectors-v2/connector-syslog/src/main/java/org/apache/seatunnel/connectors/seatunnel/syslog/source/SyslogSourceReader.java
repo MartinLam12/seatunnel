@@ -17,7 +17,6 @@
 
 package org.apache.seatunnel.connectors.seatunnel.syslog.source;
 
-import org.apache.seatunnel.api.source.Boundedness;
 import org.apache.seatunnel.api.source.Collector;
 import org.apache.seatunnel.api.table.type.SeaTunnelRow;
 import org.apache.seatunnel.connectors.seatunnel.common.source.AbstractSingleSplitReader;
@@ -97,10 +96,6 @@ public class SyslogSourceReader extends AbstractSingleSplitReader<SeaTunnelRow> 
                         "Accepted syslog connection from {}",
                         clientSocket.getRemoteSocketAddress());
                 processConnection(clientSocket, output);
-                if (Boundedness.BOUNDED.equals(context.getBoundedness())) {
-                    context.signalNoMoreElement();
-                    return;
-                }
             } catch (SocketTimeoutException e) {
                 // no incoming connection within the timeout window — loop again
             }
