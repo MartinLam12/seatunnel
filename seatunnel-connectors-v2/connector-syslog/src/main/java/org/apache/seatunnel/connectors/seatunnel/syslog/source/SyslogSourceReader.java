@@ -34,6 +34,11 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -53,12 +58,19 @@ public class SyslogSourceReader extends AbstractSingleSplitReader<SeaTunnelRow> 
                             + "\\s+([^\\s\\[:]+)(?:\\[(\\w+)\\])?:?\\s*"
                             + "(.*)$");
 
-    /** Accept timeout in milliseconds — allows the reader to notice a close() call. */
+    /** Accept timeout in milliseconds, allowing the reader to notice a close() call. */
     private static final int ACCEPT_TIMEOUT_MS = 500;
+
+    private static final int POLL_TIMEOUT_MS = 100;
 
     private final SyslogConfig config;
     private final SingleSplitReaderContext context;
+    private final BlockingQueue<SeaTunnelRow> pendingRows = new LinkedBlockingQueue<>();
     private ServerSocket serverSocket;
+    private ExecutorService acceptExecutor;
+    private ExecutorService connectionExecutor;
+    private volatile boolean running;
+    private volatile RuntimeException fatalException;
 
     SyslogSourceReader(SyslogConfig config, SingleSplitReaderContext context) {
         this.config = config;
@@ -71,6 +83,8 @@ public class SyslogSourceReader extends AbstractSingleSplitReader<SeaTunnelRow> 
         try {
             serverSocket = new ServerSocket(config.getPort(), 50, bindAddress);
             serverSocket.setSoTimeout(ACCEPT_TIMEOUT_MS);
+            running = true;
+            startAcceptLoop();
             log.info("Syslog source listening on {}:{}", config.getHost(), config.getPort());
         } catch (IOException e) {
             throw new SyslogConnectorException(
@@ -82,45 +96,133 @@ public class SyslogSourceReader extends AbstractSingleSplitReader<SeaTunnelRow> 
 
     @Override
     public void close() throws IOException {
+        running = false;
         if (serverSocket != null && !serverSocket.isClosed()) {
             serverSocket.close();
         }
+        shutdownExecutor(acceptExecutor, "syslog accept");
+        shutdownExecutor(connectionExecutor, "syslog connection");
     }
 
     @Override
     public void pollNext(Collector<SeaTunnelRow> output) throws Exception {
-        while (!serverSocket.isClosed()) {
+        rethrowFatalIfNeeded();
+
+        SeaTunnelRow row = pendingRows.poll(POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        if (row == null) {
+            return;
+        }
+
+        synchronized (output.getCheckpointLock()) {
+            output.collect(row);
+            while ((row = pendingRows.poll()) != null) {
+                output.collect(row);
+            }
+        }
+    }
+
+    private void startAcceptLoop() {
+        acceptExecutor =
+                Executors.newSingleThreadExecutor(
+                        runnable -> {
+                            Thread thread =
+                                    new Thread(runnable, "syslog-accept-" + config.getPort());
+                            thread.setDaemon(true);
+                            return thread;
+                        });
+        connectionExecutor =
+                Executors.newCachedThreadPool(
+                        runnable -> {
+                            Thread thread =
+                                    new Thread(runnable, "syslog-connection-" + config.getPort());
+                            thread.setDaemon(true);
+                            return thread;
+                        });
+
+        acceptExecutor.submit(
+                () -> {
+                    try {
+                        acceptConnections();
+                    } catch (RuntimeException e) {
+                        fatalException = e;
+                        throw e;
+                    }
+                });
+    }
+
+    private void acceptConnections() {
+        while (running && serverSocket != null && !serverSocket.isClosed()) {
             try {
                 Socket clientSocket = serverSocket.accept();
+                clientSocket.setSoTimeout(ACCEPT_TIMEOUT_MS);
                 log.debug(
                         "Accepted syslog connection from {}",
                         clientSocket.getRemoteSocketAddress());
-                processConnection(clientSocket, output);
+                connectionExecutor.submit(() -> processConnection(clientSocket));
             } catch (SocketTimeoutException e) {
-                // no incoming connection within the timeout window — loop again
+                // no incoming connection within the timeout window, loop again
+            } catch (IOException e) {
+                if (running) {
+                    throw new SyslogConnectorException(
+                            SyslogConnectorErrorCode.SERVER_ACCEPT_FAILED,
+                            "Failed to accept syslog connection on "
+                                    + config.getHost()
+                                    + ":"
+                                    + config.getPort(),
+                            e);
+                }
             }
         }
     }
 
     /**
-     * Reads newline-delimited syslog messages from a client connection and emits parsed rows.
-     * Closes the client socket when the connection is terminated by the sender.
+     * Reads newline-delimited syslog messages from a client connection and queues parsed rows.
+     * Closes the client socket when the connection is terminated by the sender or the reader.
      */
-    private void processConnection(Socket clientSocket, Collector<SeaTunnelRow> output) {
+    private void processConnection(Socket clientSocket) {
         try (Socket socket = clientSocket;
                 BufferedReader reader =
                         new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
+            while (running) {
+                String line;
+                try {
+                    line = reader.readLine();
+                } catch (SocketTimeoutException e) {
+                    continue;
+                }
+                if (line == null) {
+                    break;
+                }
                 SeaTunnelRow row = parseRfc3164(line);
                 if (row != null) {
-                    output.collect(row);
+                    pendingRows.offer(row);
                 } else {
                     log.warn("Skipping malformed syslog line: {}", line);
                 }
             }
         } catch (IOException e) {
             log.warn("Error reading from syslog client connection: {}", e.getMessage());
+        }
+    }
+
+    private void rethrowFatalIfNeeded() {
+        RuntimeException exception = fatalException;
+        if (exception != null) {
+            throw exception;
+        }
+    }
+
+    private void shutdownExecutor(ExecutorService executor, String executorName) {
+        if (executor == null) {
+            return;
+        }
+        executor.shutdownNow();
+        try {
+            if (!executor.awaitTermination(3, TimeUnit.SECONDS)) {
+                log.warn("{} executor did not terminate within timeout", executorName);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
